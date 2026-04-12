@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    image: krishsoh/newsapp-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - PORT=5000
+      - NEWS_API_KEY=your api key
+
+  frontend:
+    image: krishsoh/newsapp-frontend:latest
+    build:
+      context: ./newsapps
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
