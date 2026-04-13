@@ -16,7 +16,7 @@ Our structure guarantees a minimal footprint and zero-CVE environment utilizing 
   - A Node.js Express server acting as a secure intermediary layer, safely keeping the NewsAPI tokens away from the frontend client.
   - Deploys using Google's completely stripped-down `gcr.io/distroless/nodejs20` environment.
 - **Infrastructure (`infra/`)**:
-  - Contains `.tf` files to automatically configure network security and spawn scalable AWS EC2 instances that autonomously install and provision the Docker network payload.
+  - Contains `.tf` files defining a complete High-Availability (HA) cloud architecture. It automatically provisions a Custom VPC, an Application Load Balancer, and an Auto Scaling Group of EC2 instances that autonomously install and run the Docker containers.
 
 ### 🛡️ The Nginx Reverse Proxy (Overcoming CORS & Hardcoded URLs)
 
@@ -53,7 +53,7 @@ The localized network will bridge both containers together and host the graphica
 
 ## 🚀 AWS Cloud Deployment (Terraform)
 
-Deploying to production is seamless and highly automated. Instead of manually SSHing into servers, manually installing, and configuring instances side-by-side, we use HashiCorp Terraform to provision an EC2 instance that *installs its own dependencies and pulls your remote images completely autonomously*. 
+Deploying to production is seamless and highly automated. Instead of manually SSHing into servers, manually installing, and configuring instances side-by-side, we use HashiCorp Terraform to provision a high-availability infrastructure. This includes an Auto Scaling Group behind an Application Load Balancer in a Custom VPC, where each node *installs its own dependencies and pulls your remote images completely autonomously*. 
 
 ### Step 1: Push Images to Docker Hub
 Because our external AWS EC2 instance will boot up and pull images completely independently, you must first publish your code structures into a repository (Docker Hub) where the server can reach it from the perimeter network.
@@ -92,24 +92,24 @@ terraform apply
 
 ### What exactly happens in the background during launch?
 When you approve the Terraform blueprint, it will:
-1. Connect via API to AWS and request a new EC2 instance mapped to your defined region.
-2. Generate a Security Group opening up Port `8080` (for web traffic) and Port `22` (for explicit secure terminal access).
-3. Securely inject a `user_data` startup payload block into the instance structure. As soon as the Linux OS comes online, it strictly follows our predefined bootstrap sequence:
-    - Autonomously installs the Docker daemon and enables initialization loops.
-    - Constructs the internal `newsapp-network` tunnel (to bridge external proxy routing later).
-    - Accesses Docker Hub and non-interactively pulls your published images.
-    - Mounts them, locks the network interfaces, pushes Port 5000 inside the internal tunnel logic, and securely exposes Port 8080 to the greater Internet.
+1. Establish a **Custom VPC** with dedicated subnets spread across multiple Availability Zones, ensuring high availability.
+2. Generate Security Groups allowing web traffic via an **Application Load Balancer** and restricting direct container access.
+3. Deploy an **Auto Scaling Group (ASG)** designed to dynamically scale from 1 to 3 instances, ensuring zero downtime and fault tolerance.
+4. Securely inject a `user_data` startup script via a Launch Template. As each underlying EC2 instance comes online, it executes the bootstrap sequence:
+    - Autonomously installs the Docker daemon.
+    - Constructs the internal `newsapp-network` tunnel.
+    - Accesses Docker Hub to pull and run the backend (`newsapp-backend`) and frontend (`newsapp-frontend`) containers natively using the specified configurations.
+    - The system actively monitors node health using the Load Balancer and replaces unhealthy instances automatically.
 
 ### Step 4: Access your Live App!
-Upon successful execution, Terraform will hand over an `Outputs` block dynamically extracted from the AWS API containing the exact `application_url`. It will generally print to the console mapping like this:
+Upon successful execution, Terraform will hand over an `Outputs` block dynamically extracted from the AWS API containing the exact `application_url` pointing to your Load Balancer's DNS name. It will generally print to the console mapping like this:
 
 ```bash
 Outputs:
 
-application_url = "http://16.16.xx.xx:8080"
-public_ip = "16.16.xx.xx"
+application_url = "newsapp-load-balancer-xxxxxxxxxx.eu-north-1.elb.amazonaws.com"
 ```
-Click the link and your News app is successfully live operating securely within an EC2 cluster!
+Navigate to the URL and your News app is successfully live, load-balanced, and operating securely across multiple availability zones!
 
 ### Managing Lifecycle
 If you ever want to completely tear down the architecture, unbind the IP addresses, and successfully stop getting billed, use the clean destroy hook:
