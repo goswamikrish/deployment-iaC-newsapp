@@ -185,13 +185,13 @@ resource "aws_launch_template" "newsapp_lt" {
                 --restart always \
                 -e PORT=5000 \
                 -e NEWS_API_KEY=0ed714c98a1c44938f58aa38b0a9aab7 \
-                krishsoh/newsapp-backend:latest
+                krishsoh/newsapp-backend:${var.docker_image_tag}
               docker run -d \
                 -p 8080:8080 \
                 --name frontend \
                 --network newsapp-network \
                 --restart always \
-                krishsoh/newsapp-frontend:latest
+                krishsoh/newsapp-frontend:${var.docker_image_tag}
               EOF
   )
 

@@ -133,7 +133,7 @@ Push to main
      │                            │
      ├──► build-frontend ─► Docker Hub (newsapp-frontend:latest + :sha)
      │                            │
-     └────────────────────────────┴──► terraform (init → plan → apply)
+     └────────────────────────────┴──► terraform (fmt → validate → plan → apply)
 ```
 
 The pipeline consists of **three jobs**:
@@ -142,7 +142,7 @@ The pipeline consists of **three jobs**:
 |-----|---------|-------------|
 | `build-backend` | `ubuntu-latest` | Builds the Distroless Node.js backend image from `./backend` and pushes it to Docker Hub |
 | `build-frontend` | `ubuntu-latest` | Builds the Distroless Chainguard Nginx frontend image from `./newsapps` and pushes it to Docker Hub |
-| `terraform` | `ubuntu-latest` | Runs **after both builds succeed** — initializes, plans, and applies the Terraform infrastructure from `./infra` |
+| `terraform` | `ubuntu-latest` | Runs **after both builds succeed** — validates, plans, and applies the Terraform infrastructure from `./infra` |
 
 ### How It Works
 
@@ -150,12 +150,57 @@ The pipeline consists of **three jobs**:
    - `:latest` — always points to the most recent successful build.
    - `:<commit-sha>` — provides an immutable, traceable reference to the exact source code revision.
 
-2. **Gated Infrastructure Deployment**: The `terraform` job uses the `needs: [build-backend, build-frontend]` directive, ensuring it only runs once both images are confirmed to be successfully pushed. It then executes:
-   - `terraform init` — downloads the AWS provider plugins.
-   - `terraform plan` — previews the infrastructure delta.
-   - `terraform apply -auto-approve` — provisions or updates the AWS resources without manual confirmation.
+2. **Image-Tag-Driven Rolling Deployments**: The commit SHA is passed to Terraform as the `docker_image_tag` variable (`-var="docker_image_tag=<sha>"`). This updates the EC2 Launch Template's `user_data` script, causing the Auto Scaling Group to detect a change and trigger a **rolling instance refresh** — replacing old instances with ones that pull and run the newly built images.
 
-3. **Auto-Healing in Production**: When the ASG spins up fresh EC2 instances (or replaces unhealthy ones), they pull the `:latest` images that were just pushed by the pipeline — ensuring your deployment always reflects the newest code on `main`.
+3. **Gated Infrastructure Deployment**: The `terraform` job uses the `needs: [build-backend, build-frontend]` directive, ensuring it only runs once both images are confirmed to be successfully pushed. It then executes:
+   - `terraform init` — connects to the S3 remote backend and downloads providers.
+   - `terraform fmt -check` — ensures configuration formatting is consistent.
+   - `terraform validate` — checks configuration syntax and internal consistency.
+   - `terraform plan` — previews the infrastructure delta.
+   - `terraform apply -auto-approve` — provisions or updates the AWS resources.
+
+4. **Auto-Healing in Production**: The ASG continuously monitors instance health via the Application Load Balancer. If an instance becomes unhealthy, the ASG automatically terminates it and launches a replacement that bootstraps with the current Docker images.
+
+### One-Time Setup: S3 Remote Backend
+
+Terraform state must be stored remotely so that CI/CD runs share state and don't attempt to re-create existing resources. The project uses an **S3 + DynamoDB** backend (configured in `infra/backend.tf`).
+
+> ⚠️ **You must create these AWS resources once before the first pipeline run:**
+
+```bash
+# Create the S3 bucket for state storage
+aws s3api create-bucket \
+  --bucket newsapp-terraform-state \
+  --region eu-north-1 \
+  --create-bucket-configuration LocationConstraint=eu-north-1
+
+# Enable versioning (protects against accidental state corruption)
+aws s3api put-bucket-versioning \
+  --bucket newsapp-terraform-state \
+  --versioning-configuration Status=Enabled
+
+# Enable server-side encryption by default
+aws s3api put-bucket-encryption \
+  --bucket newsapp-terraform-state \
+  --server-side-encryption-configuration \
+    '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+# Block all public access to the state bucket
+aws s3api put-public-access-block \
+  --bucket newsapp-terraform-state \
+  --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+# Create the DynamoDB table for state locking
+aws dynamodb create-table \
+  --table-name newsapp-terraform-lock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region eu-north-1
+```
+
+After creating these resources, run `terraform init` locally from the `infra/` directory to migrate your state to the remote backend.
 
 ### Required GitHub Secrets
 
@@ -165,7 +210,7 @@ Navigate to your repository **Settings → Secrets and variables → Actions** a
 |--------|---------|
 | `DOCKERHUB_USERNAME` | Your Docker Hub username (e.g., `krishsoh`) |
 | `DOCKERHUB_TOKEN` | A Docker Hub [Personal Access Token](https://docs.docker.com/security/for-developers/access-tokens/) |
-| `AWS_ACCESS_KEY_ID` | IAM access key with permissions to manage VPC, EC2, ALB, and ASG resources |
+| `AWS_ACCESS_KEY_ID` | IAM access key with permissions to manage VPC, EC2, ALB, ASG, S3, and DynamoDB resources |
 | `AWS_SECRET_ACCESS_KEY` | Corresponding IAM secret key |
 
 > ⚠️ **Security Note**: Never commit these values directly into your codebase. GitHub encrypts all secrets at rest and only exposes them to workflow runs on the `main` branch.
