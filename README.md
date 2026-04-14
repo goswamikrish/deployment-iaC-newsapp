@@ -117,3 +117,55 @@ If you ever want to completely tear down the architecture, unbind the IP address
 ```bash
 terraform destroy
 ```
+
+---
+
+## ⚙️ CI/CD Pipeline (GitHub Actions)
+
+The entire build → push → deploy lifecycle is fully automated using a **GitHub Actions** workflow (`.github/workflows/deploy.yml`). Every push to the `main` branch triggers the pipeline with zero manual intervention required.
+
+### Pipeline Architecture
+
+```
+Push to main
+     │
+     ├──► build-backend ──► Docker Hub (newsapp-backend:latest + :sha)
+     │                            │
+     ├──► build-frontend ─► Docker Hub (newsapp-frontend:latest + :sha)
+     │                            │
+     └────────────────────────────┴──► terraform (init → plan → apply)
+```
+
+The pipeline consists of **three jobs**:
+
+| Job | Runs On | Description |
+|-----|---------|-------------|
+| `build-backend` | `ubuntu-latest` | Builds the Distroless Node.js backend image from `./backend` and pushes it to Docker Hub |
+| `build-frontend` | `ubuntu-latest` | Builds the Distroless Chainguard Nginx frontend image from `./newsapps` and pushes it to Docker Hub |
+| `terraform` | `ubuntu-latest` | Runs **after both builds succeed** — initializes, plans, and applies the Terraform infrastructure from `./infra` |
+
+### How It Works
+
+1. **Parallel Container Builds**: The `build-backend` and `build-frontend` jobs execute simultaneously, each logging into Docker Hub, building from their respective Dockerfiles, and pushing two tags per image:
+   - `:latest` — always points to the most recent successful build.
+   - `:<commit-sha>` — provides an immutable, traceable reference to the exact source code revision.
+
+2. **Gated Infrastructure Deployment**: The `terraform` job uses the `needs: [build-backend, build-frontend]` directive, ensuring it only runs once both images are confirmed to be successfully pushed. It then executes:
+   - `terraform init` — downloads the AWS provider plugins.
+   - `terraform plan` — previews the infrastructure delta.
+   - `terraform apply -auto-approve` — provisions or updates the AWS resources without manual confirmation.
+
+3. **Auto-Healing in Production**: When the ASG spins up fresh EC2 instances (or replaces unhealthy ones), they pull the `:latest` images that were just pushed by the pipeline — ensuring your deployment always reflects the newest code on `main`.
+
+### Required GitHub Secrets
+
+Navigate to your repository **Settings → Secrets and variables → Actions** and configure:
+
+| Secret | Purpose |
+|--------|---------|
+| `DOCKERHUB_USERNAME` | Your Docker Hub username (e.g., `krishsoh`) |
+| `DOCKERHUB_TOKEN` | A Docker Hub [Personal Access Token](https://docs.docker.com/security/for-developers/access-tokens/) |
+| `AWS_ACCESS_KEY_ID` | IAM access key with permissions to manage VPC, EC2, ALB, and ASG resources |
+| `AWS_SECRET_ACCESS_KEY` | Corresponding IAM secret key |
+
+> ⚠️ **Security Note**: Never commit these values directly into your codebase. GitHub encrypts all secrets at rest and only exposes them to workflow runs on the `main` branch.
